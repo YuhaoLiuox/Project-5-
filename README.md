@@ -1,2 +1,2 @@
 # Project-5-
-k-means clustering for searching for quality stocks
+This project is written in the platform "Uqer", where the basic language is Python
