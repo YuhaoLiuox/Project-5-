@@ -1,0 +1,185 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from collections import defaultdict
+from datetime import datetime
+from sklearn.cluster import KMeans
+
+class StockCluster(object):
+    def setdate(self, begindate, enddate, clusterdate=0):
+        self.begindate = begindate
+        self.enddate = enddate
+        if clusterdate == 0:
+            self.clusterdate = enddate
+        else:
+            self.clusterdate = clusterdate
+
+    def setticker(self, ticker):
+        self.ticker = ticker
+        self.getstockcode()
+
+    def setpool(self, stocklist):
+        self.stockcodelist = []
+        for code in stocklist:
+            self.stockcodelist.append(code[0:6])
+
+    def getstockindex(self):
+        stockindexDF = DataAPI.IdxGet(secID=u"",ticker=u"",field=u"",pandas="1")
+        for i in range(len(stockindexDF)):
+            print('%s:%s' %(stockindexDF.iloc[i, 2], stockindexDF.iloc[i, 3]))
+
+    def getstockcode(self):
+        self.stockcodelist = []
+        if self.ticker == 'A':
+            temp = DataAPI.EquGet(equTypeCD='A', listStatusCD='L', field='ticker')
+            for i in range(len(temp)):
+                self.stockcodelist.append(temp.iloc[i, 0])
+        elif self.ticker == 'B':
+            temp = DataAPI.EquGet(equTypeCD='B', listStatusCD='L', field='ticker')
+            for i in range(len(temp)):
+                self.stockcodelist.append(temp.iloc[i, 0])
+        else:
+            temp = DataAPI.IdxConsGet(ticker=self.ticker, isNew='1', field='consTickerSymbol')
+            for i in range(len(temp)):
+                self.stockcodelist.append(temp.iloc[i, 0])
+
+    def compute_stockpricechangeratioarray(self):
+        getdatedf = DataAPI.MktEqudAdjGet(ticker=self.stockcodelist[0], beginDate=self.begindate, endDate=self.enddate, field=['tradeDate'])
+        for i in range(len(getdatedf)):
+            if getdatedf.iloc[i, 0] == self.clusterdate: 
+                self.clusterdatenum = i      
+        allstockpricechangeratio = []
+        for i in range(len(self.stockcodelist)):
+            temp = DataAPI.MktEqudAdjGet(ticker=self.stockcodelist[i], beginDate=self.begindate, endDate=self.enddate, field=['closePrice', 'ticker'])
+            singlestockpricechangeratio = []
+            for j in range(len(temp)):
+                if j < len(temp) - 1:
+                    ratio = (temp.iloc[j + 1,0] - temp.iloc[j,0]) / temp.iloc[j, 0]
+                    singlestockpricechangeratio.append(ratio)
+            allstockpricechangeratio.append(singlestockpricechangeratio)
+        lenth = len(allstockpricechangeratio[0])
+        for i in range(len(allstockpricechangeratio)):
+            if len(allstockpricechangeratio[i]) >= lenth:
+                lenth = len(allstockpricechangeratio[i])
+            else:
+                 continue
+        temp_newfeaturearray = []
+        self.newstockcodeindex = []
+        for k in range(len(allstockpricechangeratio)):
+            if len(allstockpricechangeratio[k]) == lenth:
+                temp_newfeaturearray.append(allstockpricechangeratio[k])
+                self.newstockcodeindex.append(self.stockcodelist[k])
+        self.newfeaturearray = np.array(temp_newfeaturearray)
+    
+    def kMeans(self, Num):   
+        self.compute_stockpricechangeratioarray()
+        temp = []
+        self.clusterdf = pd.DataFrame(temp, index=self.newstockcodeindex, columns=[0])
+        cluserfeaturearray = []
+        for i in range(len(self.newfeaturearray)):
+            stockfeaturearray = []
+            for j in range(self.clusterdatenum):
+                stockfeaturearray.append(self.newfeaturearray[i , j])
+            cluserfeaturearray.append(stockfeaturearray)
+        y_pred = KMeans(n_clusters=Num, n_init=50).fit_predict(cluserfeaturearray)
+        self.predictlabel = y_pred   
+        for p in range(len(self.clusterdf)):
+            self.clusterdf.iloc[p, 0] = y_pred[p]
+        self.clusteringdict = defaultdict(list)
+        for k, l in [(j, i) for i, j in enumerate(y_pred)]:
+            self.clusteringdict[k].append(l)
+        categorypricechangeratio = []
+        datecolumn = []
+        temp = DataAPI.MktEqudAdjGet(secID='000001.XSHE',beginDate=self.begindate,endDate=self.enddate,pandas="1")
+        for date in range(len(temp)):
+            datecolumn.append(temp.loc[date, 'tradeDate'])
+        datecolumn.pop(0)  
+        self.valuechangeDF = pd.DataFrame(categorypricechangeratio, index=range(1, len(self.clusteringdict) + 1), columns=datecolumn)
+        for column in range(len(self.newfeaturearray[0])):  
+            for i in range(len(self.clusteringdict)):  
+                Temp = 0
+                for j in range(len(self.clusteringdict[i])):
+                    Temp = Temp + self.newfeaturearray[self.clusteringdict[i][j]][column] 
+                Temp = Temp / len(self.clusteringdict[i]) 
+                if column == 0:
+                    self.valuechangeDF.iloc[i, column] = 1 + Temp
+                else:
+                    self.valuechangeDF.iloc[i, column] = self.valuechangeDF.iloc[i, column-1] * (1 + Temp)
+        self.valuechangeDF = self.valuechangeDF.sort_values(by=self.valuechangeDF.columns[-1], ascending=False)
+        plt.figure(figsize=(18.0, 12.0))
+        for r in range(len(self.valuechangeDF)):
+            x = []
+            y = []
+            for q in range(len(self.valuechangeDF.iloc[0, :])):
+                x.append(datetime.strptime(self.valuechangeDF.columns[q], '%Y-%m-%d'))  
+                y.append(self.valuechangeDF.iloc[r, q])
+            plt.plot(x, y, label='No.%s category' % str(r + 1))
+        plt.legend(loc='best')
+        plt.title('%s Categories Clustering' % Num)
+        ymin, ymax = plt.ylim()
+        plt.vlines(self.clusterdate, ymin, ymax, colors = "b", linestyles = "dashed")
+        plt.show()
+
+    def plotsingecluster(self, nrow, PicWidth, PicLength):
+        plt.figure(figsize=(PicWidth, PicLength))
+        for i in range(len(self.clusteringdict)):
+            for j in range(len(self.clusteringdict[i])):
+                x = []
+                y = []
+                for column in range(len(self.newfeaturearray[0])):
+                    x.append(datetime.strptime(self.valuechangeDF.columns[column], '%Y-%m-%d'))
+                    if column == 0:
+                        y.append(1 +self.newfeaturearray[self.clusteringdict[i][j]][column])
+                    else:
+                        y.append(y[-1] * (1 + self.newfeaturearray[self.clusteringdict[i][j]][column]))
+                plt.subplot(nrow, len(self.clusteringdict)/nrow, i + 1)
+                plt.title('%s Categories Clustering NO.%s' % (len(self.clusteringdict), i+1))
+                plt.plot(x, y)
+        plt.show()
+        
+    def ClusterStockName(self, Num):
+        Num = self.valuechangeDF.index[Num - 1]
+        temp = []
+        for i in self.clusteringdict[Num - 1]:
+            temp.append(self.newstockcodeindex[i])
+        df = DataAPI.EquGet(equTypeCD=u"A",ticker=temp,field=['ticker','secShortName'],pandas="1")
+        
+    def getfeaturearrey(self):
+        print(self.valuechangeDF)
+
+    def count(self):
+        for i in range(len(self.valuechangeDF.index)):
+            print('No.%s Categorie has %s stock:%s' % (i + 1, len(self.clusteringdict[self.valuechangeDF.index[i] - 1]), self.valuechangeDF.iloc[i, -1]))
+
+    def getsecID(self, Num):
+        Num = self.valuechangeDF.index[Num - 1]
+        temp = []
+        for i in self.clusteringdict[Num-1]:
+            temp.append(self.newstockcodeindex[i])
+        df = DataAPI.EquGet(equTypeCD=u"A",ticker=temp,field=['secID'],pandas="1")
+        seclist = []
+        for j in range(len(df)):
+            seclist.append(df.iloc[j, 0])
+        return(seclist)
+
+    def definedplot(self, plotlist):
+        for r in plotlist:
+            x = []
+            y = []
+            for q in range(len(self.valuechangeDF.iloc[0, :])):
+                x.append(datetime.strptime(self.valuechangeDF.columns[q], '%Y-%m-%d'))
+                y.append(self.valuechangeDF.iloc[r, q])
+                plt.plot(x, y)
+        plt.show()
+        
+    def mergelist(self, listone, listtwo):
+        for i in listtwo:
+            listone.append(i)
+        return(listone)
+    
+    def initbuylist(self, listone, listtwo, listthree=[], listfour=[], listfive=[]):
+        listone = self.mergelist(listone, listtwo)
+        listone = self.mergelist(listone, listthree)
+        listone = self.mergelist(listone, listfour)
+        listone = self.mergelist(listone, listfive)
+        return(listone)
